@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speed Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f0f2f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .result-box {
+            margin: 10px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #f8f9fa;
+        }
+        .speed-updates {
+            margin-top: 5px;
+            font-family: monospace;
+            font-size: 14px;
+            color: #666;
+            max-height: 100px;
+            overflow-y: auto;
+        }
+        #startButton {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        #startButton:disabled {
+            background-color: #cccccc;
+        }
+        .current-speed {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2196F3;
+            margin: 10px 0;
+        }
+        .status {
+            font-weight: bold;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Internet Speed Test</h1>
+    <button id="startButton">Start Test</button>
+
+    <div class="result-box">
+        <h3>Ping Test</h3>
+        <div class="status" id="pingStatus">Not started</div>
+        <div class="current-speed" id="pingSpeed">- ms</div>
+        <div class="speed-updates" id="pingList"></div>
+    </div>
+
+    <div class="result-box">
+        <h3>Download Test</h3>
+        <div class="status" id="downloadStatus">Not started</div>
+        <div class="current-speed" id="downloadSpeed">- Mbps</div>
+        <div class="speed-updates" id="downloadList"></div>
+        <div id="totalDownload"></div>
+    </div>
+
+    <div class="result-box">
+        <h3>Upload Test</h3>
+        <div class="status" id="uploadStatus">Not started</div>
+        <div class="current-speed" id="uploadSpeed">- Mbps</div>
+        <div class="speed-updates" id="uploadList"></div>
+        <div id="totalUpload"></div>
+    </div>
+</div>
+
+<script>
+    const startButton = document.getElementById('startButton');
+
+    function updateStatus(test, status) {
+        document.getElementById(`${test}Status`).textContent = status;
+    }
+
+    function addSpeedUpdate(type, speed, unit) {
+        const list = document.getElementById(`${type}List`);
+        const speedDisplay = document.getElementById(`${type}Speed`);
+        const time = new Date().toLocaleTimeString();
+
+        // Update current speed
+        speedDisplay.textContent = `${speed.toFixed(2)} ${unit}`;
+
+        // Add to history
+        const newUpdate = document.createElement('div');
+        newUpdate.textContent = `${time}: ${speed.toFixed(2)} ${unit}`;
+        list.insertBefore(newUpdate, list.firstChild);
+
+        // Keep only last 10 updates
+        while (list.children.length > 10) {
+            list.removeChild(list.lastChild);
+        }
+    }
+
+    async function measurePing(samples = 5) {
+        updateStatus('ping', 'Testing ping...');
+        for (let i = 0; i < samples; i++) {
+            const startTime = performance.now();
+            await fetch('/ping');
+            const endTime = performance.now();
+            const pingTime = endTime - startTime;
+            addSpeedUpdate('ping', pingTime, 'ms');
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
+        updateStatus('ping', 'Completed');
+    }
+
+    async function measureDownloadSpeed(size) {
+        updateStatus('download', `Testing download (${size})...`);
+        const startTime = performance.now();
+        const response = await fetch(`/download/${size}`);
+        const reader = response.body.getReader();
+        const contentLength = +response.headers.get('Content-Length');
+
+        let receivedLength = 0;
+        let lastUpdate = startTime;
+        let lastBytes = 0;
+
+        while(true) {
+            const {done, value} = await reader.read();
+
+            if (done) break;
+
+            receivedLength += value.length;
+            const currentTime = performance.now();
+            const updateInterval = (currentTime - lastUpdate) / 1000;
+
+            if (updateInterval >= 1) {
+                const bytesPerSecond = (receivedLength - lastBytes) / updateInterval;
+                const speedMbps = (bytesPerSecond * 8) / (1024 * 1024);
+                addSpeedUpdate('download', speedMbps, 'Mbps');
+
+                lastUpdate = currentTime;
+                lastBytes = receivedLength;
+            }
+        }
+
+        const totalMB = receivedLength / (1024 * 1024);
+        document.getElementById('totalDownload').textContent =
+            `Total data downloaded: ${totalMB.toFixed(2)} MB`;
+    }
+
+    async function measureUploadSpeed(sizeMB) {
+        updateStatus('upload', `Testing upload (${sizeMB}MB)...`);
+        const chunkSize = 1024 * 1024; // 1MB chunks
+        const totalBytes = sizeMB * 1024 * 1024;
+        const data = new Blob([new ArrayBuffer(totalBytes)]);
+        const startTime = performance.now();
+        let lastUpdate = startTime;
+        let lastBytes = 0;
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/upload', true);
+        xhr.upload.onprogress = (event) => {
+            const currentTime = performance.now();
+            const updateInterval = (currentTime - lastUpdate) / 1000;
+
+            if (updateInterval >= 1) {
+                const bytesPerSecond = (event.loaded - lastBytes) / updateInterval;
+                const speedMbps = (bytesPerSecond * 8) / (1024 * 1024);
+                addSpeedUpdate('upload', speedMbps, 'Mbps');
+
+                lastUpdate = currentTime;
+                lastBytes = event.loaded;
+            }
+        };
+
+        return new Promise((resolve, reject) => {
+            xhr.onload = () => {
+                const totalMB = totalBytes / (1024 * 1024);
+                document.getElementById('totalUpload').textContent =
+                    `Total data uploaded: ${totalMB.toFixed(2)} MB`;
+                resolve();
+            };
+            xhr.onerror = () => reject(new Error('Upload failed'));
+            xhr.send(data);
+        });
+    }
+
+    async function runSpeedTest() {
+        try {
+            startButton.disabled = true;
+
+            // Clear previous results
+            ['ping', 'download', 'upload'].forEach(type => {
+                document.getElementById(`${type}List`).innerHTML = '';
+                document.getElementById(`${type}Speed`).textContent = '- ';
+                document.getElementById(`${type}Status`).textContent = 'Not started';
+            });
+            document.getElementById('totalDownload').textContent = '';
+            document.getElementById('totalUpload').textContent = '';
+
+            // Run tests
+            await measurePing(5);
+
+            const downloadSizes = ['small', 'medium', 'large', 'xlarge', 'xtralarge'];
+            for (const size of downloadSizes) {
+                await measureDownloadSpeed(size);
+            }
+
+            const uploadSizes = [2, 8, 16, 32, 64];
+            for (const size of uploadSizes) {
+                await measureUploadSpeed(size);
+            }
+
+            updateStatus('upload', 'Completed');
+        } catch (error) {
+            console.error('Test error:', error);
+            alert('An error occurred during the speed test. Please try again.');
+        } finally {
+            startButton.disabled = false;
+        }
+    }
+
+    startButton.addEventListener('click', runSpeedTest);
+</script>
+</body>
+</html>
