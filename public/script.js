@@ -38,60 +38,66 @@ async function measurePing(samples = 5) {
     updateStatus('ping', 'Completed');
 }
 
-async function measureDownloadSpeed() {
+// Modified measureDownloadSpeed function with multiple connections
+async function measureDownloadSpeed(concurrentConnections = 8) {
     updateStatus('download', 'Testing download...');
+
+    const downloadPromises = [];
+    let totalReceivedLength = 0;
     const startTime = performance.now();
-    let receivedLength = 0;
     let lastUpdate = startTime;
     let lastBytes = 0;
 
-    try {
+    // Create multiple concurrent download requests
+    for (let i = 0; i < concurrentConnections; i++) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
-        const response = await fetch('/download/', {
+        // Fetch data with the provided controller and timeout
+        const fetchData = fetch('/download/', {
             signal: controller.signal
+        }).then(async (response) => {
+            const reader = response.body.getReader();
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                totalReceivedLength += value.length;
+                const currentTime = performance.now();
+                const updateInterval = (currentTime - lastUpdate) / 1000;
+
+                if (updateInterval >= 1) {
+                    const bytesPerSecond = (totalReceivedLength - lastBytes) / updateInterval;
+                    const speedMbps = (bytesPerSecond * 8) / (1024 * 1024);
+                    addSpeedUpdate('download', speedMbps, 'Mbps');
+                    lastUpdate = currentTime;
+                    lastBytes = totalReceivedLength;
+                }
+            }
+
+            clearTimeout(timeoutId);
+        }).catch(() => {
+            // Handle abort or error (silent handling here)
         });
-        const reader = response.body.getReader();
-        const contentLength = +response.headers.get('Content-Length');
 
-        while(true) {
-            const {done, value} = await reader.read();
-            if (done) break;
-
-            receivedLength += value.length;
-            const currentTime = performance.now();
-            const updateInterval = (currentTime - lastUpdate) / 1000;
-
-            if (updateInterval >= 1) {
-                const bytesPerSecond = (receivedLength - lastBytes) / updateInterval;
-                const speedMbps = (bytesPerSecond * 8) / (1024 * 1024);
-                addSpeedUpdate('download', speedMbps, 'Mbps');
-
-                lastUpdate = currentTime;
-                lastBytes = receivedLength;
-            }
-
-            // Check if we've exceeded the time limit
-            if (performance.now() - startTime >= TIMEOUT_MS) {
-                controller.abort();
-                break;
-            }
-        }
-
-        clearTimeout(timeoutId);
-    } catch (error) {
-        // Handle abortion or other errors silently
-    } finally {
-        const downloadTime = (performance.now() - startTime) / 1000;
-        const totalMB = receivedLength / (1024 * 1024);
-        document.getElementById('totalDownload').textContent =
-            `Total data downloaded: ${totalMB.toFixed(2)} MB`;
-        return { totalMB, downloadTime };
+        downloadPromises.push(fetchData);
     }
+
+    // Wait for all download requests to complete
+    await Promise.all(downloadPromises);
+
+    const downloadTime = (performance.now() - startTime) / 1000;
+    const totalMB = totalReceivedLength / (1024 * 1024);
+    document.getElementById('totalDownload').textContent =
+        `Total data downloaded: ${totalMB.toFixed(2)} MB`;
+
+    return { totalMB, downloadTime };
 }
 
+
 // Modified measureUploadSpeed function for single file
+// Modified measureUploadSpeed function with multiple connections
 async function measureUploadSpeed() {
     updateStatus('upload', 'Testing upload...');
     const data = new Blob([new ArrayBuffer(TEST_FILE_SIZE * 1024 * 1024)]);
@@ -162,14 +168,15 @@ async function runSpeedTest() {
         // Run ping test
         await measurePing(5);
 
-        // Single download test
-        const downloadResult = await measureDownloadSpeed();
+        // Run download test with multiple connections
+        const downloadResult = await measureDownloadSpeed(8);  // 8 connections for download
         const avgDownloadSpeed = (downloadResult.totalMB * 8) / downloadResult.downloadTime;
         document.getElementById('avg-download-speed').textContent =
             `${avgDownloadSpeed.toFixed(2)} Mbps`;
 
         updateStatus('download', 'Completed. The last measurement:');
-        // Single upload test
+
+        // Run upload test with multiple connections
         const uploadResult = await measureUploadSpeed();
         const avgUploadSpeed = (uploadResult.totalMB * 8) / uploadResult.uploadTime;
         document.getElementById('avg-upload-speed').textContent =
@@ -181,4 +188,5 @@ async function runSpeedTest() {
         startButton.disabled = false;
     }
 }
+
 startButton.addEventListener('click', runSpeedTest);
